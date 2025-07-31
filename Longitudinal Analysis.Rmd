@@ -1,0 +1,223 @@
+---
+title: "Longitudinal Analysis"
+author: "Kennedy Zinn"
+date: "2025-07-21"
+output: html_document
+---
+
+
+```{r}
+suppressPackageStartupMessages(library(minfi))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(DMRcate))
+suppressPackageStartupMessages(library(maxprobes))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(missMethyl))
+suppressPackageStartupMessages(library(MethylToSNP))
+```
+
+```{r}
+library(lme4)
+```
+
+# Load data
+```{r}
+# load the idat files
+rgSet <- read.metharray.exp("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/dna methyl/within groups/All Phases", force = T)
+```
+
+```{r}
+# load sample sheet
+sample_sheet <- read_excel("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/dna methyl/within groups/All Phases/sample_sheet_ALL.xlsx")
+```
+
+# Pre-processing
+
+```{r}
+source("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/dna methyl/process_methyl_microarray.R")
+gmSet <- process_methyl_microarray(rgSet)
+```
+
+Beta values, which range between [0,1], represent the proportion of methylated DNA copies at a specific CpG site compared to all of the DNA copies at that site. Beta values for the ith CpG site are mathematically defined as,
+
+Beta(i) = max(yi(methyl),0) / [max(yi(unmethyl), 0) + max(yi(methyl), 0) + alpha],
+
+where yi methyl and unmethyl are the intensities measured by the ith methylated and unmethylated probes, respectively. 0 ensures that negative signals that take place after background adjustment are not considered. Alpha, a constant (usually 100), serves as an offset to regularize beta when both methylated and unmethylated instensities are low. Beta values are intuitive, and hence useful for visual presentations of the reads. (Du et al., 2010)
+
+```{r, echo = FALSE}
+# Compute beta values
+beta_values <- getBeta(gmSet)
+colnames(beta_values) <- sample_sheet$`Sample Name`
+```
+
+M values are log transformed beta values. Negative M values indicate higher levels of unmethylated DNA copies than methylated DNA copies. Postive M values indicate higher levels of methylated DNA copies than unmethylated. M values close to zero indicate similar intensities between methylated and unmethylated probes. M values are mathematically expressed as,
+
+M(i) = log2([max(yi(methyl))+alpha]/[max(yi(unmethyl))+alpha])
+
+where alpha is a constant to offset dramatic changes resulting from small estimation errors. M values can be expressed in terms of beta values,
+
+M(i) = log2(Beta(i)/[1 - Beta(i)])
+
+and therefore, beta values can be expressed in terms of M values,
+
+Beta(i) = 2\^M(i) / [2\^M(i) + 1]
+
+M values are more statistically sound than beta values.
+
+```{r}
+# Compute M values
+Mval <- getM(gmSet)
+dim(Mval)
+```
+
+Most variation seems explained by phase (PC1) and ID (PC2). However, proportion of variation is low ((lambda1+lambda2)/total var = 35%)
+
+```{r}
+# PCA of M values
+par(mfrow=c(1,1), cex =.5)
+plotMDS(Mval, labels=sample_sheet$Status, col=as.integer(factor(sample_sheet$Phase)))
+legend("top",legend=c("IPSC", "NCC", "SMC"), col=as.integer(factor(sample_sheet$Phase)))
+```
+
+PC1 and PC2 by disease status
+
+```{r}
+par(mfrow=c(1,1), cex =.5)
+plotMDS(Mval, labels=sample_sheet$`Sentrix ID`, col=as.integer(factor(sample_sheet$Status)))
+legend("top",legend=c("Control", "Patient"), col=1:2)
+```
+
+PC3 and PC4
+
+```{r}
+par(mfrow=c(1,1), cex =.5)
+plotMDS(Mval, labels=sample_sheet$Phase, col=as.integer(factor(sample_sheet$Status)), dim.plot = 3:4)
+legend("top",legend=c("Control","Patient"),col=1:2)
+```
+
+# Differential Methylation Analysis
+```{r}
+# create factor covariates
+sample_sheet$f <- paste(sample_sheet$Status, sample_sheet$Phase, sep = ".")
+f <- factor(sample_sheet$f)
+gender <- factor(sample_sheet$Gender)
+batch <- factor(sample_sheet$Batch)
+
+# match column names of Mval to row names of sample sheet
+sample_sheet <- as.data.frame(sample_sheet)
+rownames(sample_sheet) <- paste(sample_sheet$`Sentrix ID`, sample_sheet$`Sentrix Position`, sep = "_")
+
+# reorder sample sheet to match row names to column names of Mval
+sample_sheet <- sample_sheet[colnames(Mval),]
+
+design <- model.matrix(~0+f+gender+batch) # contrast design with intercept leads to a much more powerful analysis here than an interaction term model. perhaps because the intercept accounts for noise due to heterogeneity 
+colnames(design) <- c(levels(f), "gender", "batch")
+
+fit <- lmFit(Mval, design)
+
+cont.dif <- makeContrasts(
+    diff.smc = (patient.SMC - patient.NCC) - (control.SMC - control.NCC),
+    diff.ncc = (patient.NCC - patient.iPSCs) - (control.NCC - control.iPSCs),
+    diff.tot = (patient.SMC - patient.iPSCs) - (control.SMC - control.iPSCs),
+  levels = design
+)
+
+fit2 <- contrasts.fit(fit, cont.dif)
+fit2 <- eBayes(fit2)
+topTable(fit2, adjust = "BH")
+# the results of a contrast model with no intercept are equivalent to the interaction model results with and without an intercept
+# somehow the interaction model is not able to distinguish noise from real effect the way the contrast design is able
+```
+
+```{r}
+# identify number of significant cpgs for each contrast
+top.ncc <- topTable(fit2, coef = "diff.ncc", num = "Inf")
+sum(top.ncc$adj.P.Val<0.05)
+
+top.smc <- topTable(fit2, coef = "diff.smc", num = "Inf")
+sum(top.smc$adj.P.Val<0.05)
+
+# are NCC samples here collected closer to SMC stage than iPSCs?
+
+top.tot <- topTable(fit2, coef = "diff.tot", number = "Inf")
+sum(top.tot$adj.P.Val<0.05)
+```
+Adding the intercept greatly increases number of significant hits of diff.ncc and diff.tot, but does not change diff.smc. This makes sense that it is related only to contrasts that include ipsc, as the intercept term absorbs ipsc and controls, but how does it inflate type 1 error?
+
+```{r}
+dupcor <- duplicateCorrelation(Mval, design, block = sample_sheet$ID)
+fitDupCor <- lmFit(Mval, design, block = sample_sheet$ID, correlation = dupcor$consensus)
+
+cont.dif <- makeContrasts(
+  diff.ncc = (patient.NCC - patient.iPSCs) - (control.NCC - control.iPSCs),
+  diff.smc = (patient.SMC - patient.NCC) - (control.SMC - control.NCC),
+  levels = design
+)
+
+fit2 <- contrasts.fit(fitDupCor, cont.dif)
+fit2 <- eBayes(fit2)
+topTable(fit2, adjust = "BH")
+```
+
+```{r}
+design <- model.matrix(~1+f+gender+batch) # contrast design with intercept leads to a much more powerful analysis here than an interaction term model. perhaps because the intercept accounts for noise due to heterogeneity 
+colnames(design) <- c(levels(f), "gender", "batch")
+
+fit <- lmFit(Mval, design)
+
+cont.dif <- makeContrasts(
+    diff.ncc = (patient.NCC - patient.iPSCs) - (control.NCC - control.iPSCs),
+    diff.smc = (patient.SMC - patient.NCC) - (control.SMC - control.NCC),
+  levels = design
+)
+
+fit2 <- contrasts.fit(fit, cont.dif)
+fit2 <- eBayes(fit2)
+
+top.ncc <- topTable(fit2, coef = "diff.ncc", num = "Inf")
+sum(top.ncc$adj.P.Val<0.05)
+
+top.smc <- topTable(fit2, coef = "diff.smc", number = "Inf")
+sum(top.smc$adj.P.Val<0.05)
+```
+
+# Pathway Analysis
+```{r}
+# region analysis function
+source("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/dna methyl/region_analysis.R")
+```
+
+## iPSCs to NCC
+```{r}
+ncc.ranges <- region_analysis("patient.NCC", NULL, "0.05")
+```
+
+```{r}
+# gene set testing
+ncc.region <- goregion(ncc.ranges, all.cpg = rownames(Mval), collection = "KEGG", array.type = "EPIC")
+
+topGSA(ncc.region)
+```
+
+```{r}
+#visualize
+```
+
+## NCC to SMC
+```{r}
+smc.ranges <- region_analysis("diff.smc", NULL, "0.05")
+```
+
+```{r}
+# gene set testing
+smc.region <- goregion(smc.ranges, all.cpg = rownames(Mval), collection = "KEGG", array.type = "EPIC")
+
+topGSA(smc.region)
+```
+
+```{r}
+#visualize
+```
+
+
