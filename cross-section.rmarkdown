@@ -58,6 +58,7 @@ sample_sheet <- read_excel(sheet_path)
 # Generate QC report
 qcReport(rgSet, pdf = qc_report_path, sampNames = sample_sheet$`Sample Name`, sampGroups = sample_sheet$Status)
 ```
+
 ## Pre-Process
 
 ```{r}
@@ -112,7 +113,8 @@ Design matrix
 ```{r, echo = FALSE}
 batch <- factor(ifelse(sample_sheet$`Sentrix ID` == 204081560070, "batch.effect", "no.batch"))
 disease <- factor(sample_sheet$Status)
-design <- model.matrix(~1 + disease + batch, data = sample_sheet)
+gender <- factor(sample_sheet$Gender)
+design <- model.matrix(~disease + batch + gender, data = sample_sheet)
 colnames(design) <- c(levels(disease),levels(batch)[-1])
 design
 ```
