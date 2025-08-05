@@ -97,13 +97,8 @@ legend("top",legend=c("Control","Patient"),col=1:2)
 ```
 
 # Differential Methylation Analysis
-```{r}
-# create factor covariates
-sample_sheet$f <- paste(sample_sheet$Status, sample_sheet$Phase, sep = ".")
-f <- factor(sample_sheet$f)
-gender <- factor(sample_sheet$Gender)
-batch <- factor(sample_sheet$Batch)
 
+```{r}
 # match column names of Mval to row names of sample sheet
 sample_sheet <- as.data.frame(sample_sheet)
 rownames(sample_sheet) <- paste(sample_sheet$`Sentrix ID`, sample_sheet$`Sentrix Position`, sep = "_")
@@ -111,113 +106,129 @@ rownames(sample_sheet) <- paste(sample_sheet$`Sentrix ID`, sample_sheet$`Sentrix
 # reorder sample sheet to match row names to column names of Mval
 sample_sheet <- sample_sheet[colnames(Mval),]
 
-design <- model.matrix(~0+f+gender+batch) # contrast design with intercept leads to a much more powerful analysis here than an interaction term model. perhaps because the intercept accounts for noise due to heterogeneity 
-colnames(design) <- c(levels(f), "gender", "batch")
+# regular interaction model
+disease <- factor(sample_sheet$Status)
+phase <- factor(sample_sheet$Phase)
+sentrixID <- factor(sample_sheet$`Sentrix ID`)
+gender <- factor(sample_sheet$Gender)
 
+design <- model.matrix(~gender+sentrixID+disease*phase)
 fit <- lmFit(Mval, design)
-
+fit <- eBayes(fit)
+top <- topTable(fit, coef=8:9, number = "Inf")
+top
+```
+```{r}
+# repeat analysis but with contrasts to delineate changes between phases
+design <- model.matrix(~0+gender+sentrixID+disease*phase)
+colnames(design) <- make.names(colnames(design))
 cont.dif <- makeContrasts(
-    diff.smc = (patient.SMC - patient.NCC) - (control.SMC - control.NCC),
-    diff.ncc = (patient.NCC - patient.iPSCs) - (control.NCC - control.iPSCs),
-    diff.tot = (patient.SMC - patient.iPSCs) - (control.SMC - control.iPSCs),
+    ncc_to_smc=(diseasepatient.phaseSMC-diseasepatient.phaseNCC),
+    ipsc_to_smc = diseasepatient.phaseSMC,
+    ipsc_to_ncc = diseasepatient.phaseNCC,
   levels = design
 )
-
 fit2 <- contrasts.fit(fit, cont.dif)
 fit2 <- eBayes(fit2)
-topTable(fit2, adjust = "BH")
-# the results of a contrast model with no intercept are equivalent to the interaction model results with and without an intercept
-# somehow the interaction model is not able to distinguish noise from real effect the way the contrast design is able
+top <- topTable(fit2, number = "Inf")
+top
+```
+
+## Kegg Region Analysis
+```{r}
+region <- function(coef){
+  myAnnotation <- cpg.annotate(datatype = "array", object = Mval, what = "M",
+                             arraytype = "EPICv1",
+                             analysis.type = "differential", design = design, contrasts = T, cont.matrix = cont.dif, coef = coef)
+  if (sum(myAnnotation@ranges@elementMetadata@listData$is.sig)==0) {
+    return(NULL)
+  } else {
+    DMRs <- suppressMessages(dmrcate(myAnnotation))
+  results.ranges <- extractRanges(DMRs, genome="hg19")
+    return(results.ranges)
+  }
+}
+
+# cpg.annotate() cannot test more than one coefficient at once
+# ipsc - NCC
+ncc.ranges <- region("ipsc_to_ncc")
+
+# ipsc - SMC
+smc.ranges <- region("ipsc_to_smc")
+
+# ncc to smc
+ncc_smc.ranges <- region("ncc_to_smc")
 ```
 
 ```{r}
-# identify number of significant cpgs for each contrast
-top.ncc <- topTable(fit2, coef = "diff.ncc", num = "Inf")
-sum(top.ncc$adj.P.Val<0.05)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+anno <- getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
 
-top.smc <- topTable(fit2, coef = "diff.smc", num = "Inf")
-sum(top.smc$adj.P.Val<0.05)
-
-# are NCC samples here collected closer to SMC stage than iPSCs?
-
-top.tot <- topTable(fit2, coef = "diff.tot", number = "Inf")
-sum(top.tot$adj.P.Val<0.05)
-```
-Adding the intercept greatly increases number of significant hits of diff.ncc and diff.tot, but does not change diff.smc. This makes sense that it is related only to contrasts that include ipsc, as the intercept term absorbs ipsc and controls, but how does it inflate type 1 error?
-
-```{r}
-dupcor <- duplicateCorrelation(Mval, design, block = sample_sheet$ID)
-fitDupCor <- lmFit(Mval, design, block = sample_sheet$ID, correlation = dupcor$consensus)
-
-cont.dif <- makeContrasts(
-  diff.ncc = (patient.NCC - patient.iPSCs) - (control.NCC - control.iPSCs),
-  diff.smc = (patient.SMC - patient.NCC) - (control.SMC - control.NCC),
-  levels = design
-)
-
-fit2 <- contrasts.fit(fitDupCor, cont.dif)
-fit2 <- eBayes(fit2)
-topTable(fit2, adjust = "BH")
-```
-
-```{r}
-design <- model.matrix(~1+f+gender+batch) # contrast design with intercept leads to a much more powerful analysis here than an interaction term model. perhaps because the intercept accounts for noise due to heterogeneity 
-colnames(design) <- c(levels(f), "gender", "batch")
-
-fit <- lmFit(Mval, design)
-
-cont.dif <- makeContrasts(
-    diff.ncc = (patient.NCC - patient.iPSCs) - (control.NCC - control.iPSCs),
-    diff.smc = (patient.SMC - patient.NCC) - (control.SMC - control.NCC),
-  levels = design
-)
-
-fit2 <- contrasts.fit(fit, cont.dif)
-fit2 <- eBayes(fit2)
-
-top.ncc <- topTable(fit2, coef = "diff.ncc", num = "Inf")
-sum(top.ncc$adj.P.Val<0.05)
-
-top.smc <- topTable(fit2, coef = "diff.smc", number = "Inf")
-sum(top.smc$adj.P.Val<0.05)
-```
-
-# Pathway Analysis
-```{r}
-# region analysis function
-source("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/dna methyl/region_analysis.R")
-```
-
-## iPSCs to NCC
-```{r}
-ncc.ranges <- region_analysis("patient.NCC", NULL, "0.05")
-```
-
-```{r}
-# gene set testing
-ncc.region <- goregion(ncc.ranges, all.cpg = rownames(Mval), collection = "KEGG", array.type = "EPIC")
-
-topGSA(ncc.region)
-```
-
-```{r}
-#visualize
-```
-
-## NCC to SMC
-```{r}
-smc.ranges <- region_analysis("diff.smc", NULL, "0.05")
-```
-
-```{r}
-# gene set testing
-smc.region <- goregion(smc.ranges, all.cpg = rownames(Mval), collection = "KEGG", array.type = "EPIC")
+# testing Yan's gene
+smc.region <- gsaregion(smc.ranges, all.cpg = rownames(top), collection="6383", array.type="EPIC", anno=anno)
 
 topGSA(smc.region)
 ```
-
 ```{r}
-#visualize
+ncc_to_smc.region <- gsaregion(ncc_smc.ranges, all.cpg = rownames(top), collection = "6383", array.type = "EPIC", anno=anno)
+topGSA(ncc_to_smc.region)
 ```
 
+
+```{r}
+# overall gene set testing
+go_region <- function(granges, collection){
+  set <- goregion(granges, all.cpg = rownames(top), collection = collection, array.type="EPIC", anno=anno, sig.genes = T)
+  return(set)
+}
+
+smc.set.kegg <- go_region(smc.ranges, "KEGG")
+smc.set.go <- go_region(smc.ranges, "GO")
+ncc_smc.kegg <- go_region(ncc_smc.ranges, "KEGG")
+ncc_smc.go <- go_region(ncc_smc.ranges, "GO")
+```
+```{r}
+# identify significant genes
+unique(c(smc.set.go$SigGenesInSet,
+         smc.set.kegg$SigGenesInSet,
+         ncc_smc.go$SigGenesInSet,
+         ncc_smc.kegg$SigGenesInSet))
+```
+
+
+```{r}
+# annotate probes
+library(tibble)
+library(tidyr)
+anno.df <- as.data.frame(anno)
+anno.df <- rownames_to_column(anno.df, var = "ID")
+
+annotate_probes <- function(region_results, coef){
+  top <- topTable(fit2, number = "Inf", coef = coef) %>% 
+    rownames_to_column(var = "ID")
+  top <- merge(top, anno.df, by = "ID") %>% # split gene list into individual genes
+    dplyr::mutate(UCSC_RefGene_Name = strsplit(as.character(UCSC_RefGene_Name), split = "[,;]")) %>%
+    unnest(UCSC_RefGene_Name)
+  return(top)
+}
+
+# separate by genes of interest
+top.otx1 <- top[top$UCSC_RefGene_Name=="OTX1",]
+top.sdc2 <- top[top$UCSC_RefGene_Name=="SDC2",]
+top.sdk1 <- top[top$UCSC_RefGene_Name=="SDK1",]
+top.bloc1s2
+
+# determine overall methylation status of gene
+mean(top.otx1$logFC) #hypermethylated
+mean(top.sdc2$logFC) #hypomethylated, but not noted as a sig gene in region analyses
+mean(top.sdk1$logFC) #hypomethylated
+```
+
+# Visualize profiles for each sig gene
+```{r}
+# load rgset for each phase
+# process
+# obtain topTable
+# plot avg logFC per gene x group x phase
+```
 
