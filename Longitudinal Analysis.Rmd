@@ -197,7 +197,7 @@ unique(c(ncc_smc.go$SigGenesInSet,
 ```
 
 ```{r}
-# annotate probes
+# pull cpgs associated with significant genes
 library(tibble)
 library(tidyr)
 anno.df <- as.data.frame(anno)
@@ -209,8 +209,7 @@ annotate_probes <- function(coef, gene){
   top <- merge(top, anno.df, by = "ID") %>% # split gene list into individual genes
     dplyr::mutate(UCSC_RefGene_Name = strsplit(as.character(UCSC_RefGene_Name), split = "[,;]")) %>%
     unnest(UCSC_RefGene_Name)
-  top1 <- top[top$UCSC_RefGene_Name==gene,] %>% 
-    dplyr::mutate(avg.logFC = mean(logFC))
+  top1 <- top[top$UCSC_RefGene_Name==gene,]
   return(top1)
 }
 
@@ -227,23 +226,56 @@ results <- gene_list %>%
 ```{r}
 #average methylation status change difference (compared to control)
 library(glue)
-for (i in results[i,1:2]){
-  print(glue("The average LogFC for {results[[name]]} is {round(results$result$avg.LogFC, 3)}"))
+for (i in 1:4){
+  avg_logfc <- round(mean(results$result[[i]]$logFC), 3)
+  print(glue("The average LogFC for {results$gene[i]} in {results$coef[i]} is {avg_logfc}"))
+}
+```
+# Visualize profiles for each sig gene
+
+As only OTX1 actually overlapped with the DMRs, probes used for methylation level were those annotated to the gene instead.
+```{r}
+# plot beta value per ID gene x group x phase
+library(GenomicRanges)
+library(ggplot2)
+
+genes <- c("OTX1", "SDK1", "BLOC1S2")
+
+for (gene in genes){
+  
+  cpgs_on_gene <- results[results$coef=="ipsc_to_smc"&results$gene==gene,]$result[[1]]$ID
+
+  gene_beta <- beta_values[cpgs_on_gene,]
+
+  # Convert matrix to long format
+  gene_long <- as.data.frame(gene_beta) %>%
+    rownames_to_column("probe_id") %>%
+    pivot_longer(-probe_id, names_to = "Sample Name", values_to = "beta") %>%
+    left_join(sample_sheet, by = "Sample Name") # merge subject info with beta values
+
+  # Compute average methylation level of gene for each subject and average for each group
+  gene_avg <- gene_long %>%
+  group_by(ID, Status, Phase) %>%
+  summarise(mean_beta = mean(beta, na.rm = TRUE), .groups = "drop")
+
+  group_avg <- gene_avg %>%
+  group_by(Status, Phase) %>%
+  summarise(mean_beta = mean(mean_beta, na.rm = TRUE), .groups = "drop")
+
+  # plot
+  profile <- ggplot() +
+    # Individual subject lines
+    geom_line(data = gene_avg, aes(x = Phase, y = mean_beta, group = ID, color = Status), linewidth = 1) +
+    
+    # Group mean dashed lines
+    geom_line(data = group_avg, aes(x = Phase, y = mean_beta, group = Status, color = Status), linetype = "dashed", linewidth = 2) +
+    scale_color_manual(values = c("control" = "lightblue", "patient" = "red")) +
+    labs(title = glue("Methylation Profile of {gene}"), x = "Phase", y = "Methylation Level", color = "Phase") +
+    theme_minimal(base_size = 14) +
+    geom_text(data = gene_avg[gene_avg$Phase=="SMC",], aes(x = Phase, y = mean_beta, label = ID, color = "black"),
+              hjust = -0.1, vjust = 0.5, size = 4, show.legend = FALSE)
+  print(profile)
 }
 ```
 
-```{r}
-# determine overall methylation status of gene
-mean(top.otx1$logFC) #hypermethylated
-mean(top.sdc2$logFC) #hypomethylated, but not noted as a sig gene in region analyses
-mean(top.sdk1$logFC) #hypomethylated
-```
-
-# Visualize profiles for each sig gene
-```{r}
-# load rgset for each phase
-# process
-# obtain topTable
-# plot avg logFC per gene x group x phase
-```
 
