@@ -270,7 +270,7 @@ for (gene in genes){
     # Group mean dashed lines
     geom_line(data = group_avg, aes(x = Phase, y = mean_beta, group = Status, color = Status), linetype = "dashed", linewidth = 2) +
     scale_color_manual(values = c("control" = "lightblue", "patient" = "red")) +
-    labs(title = glue("Methylation Profile of {gene}"), x = "Phase", y = "Methylation Level", color = "Phase") +
+    labs(title = glue("Methylation Profile of {gene}"), x = "Phase", y = "Methylation Level (β-values)", color = "Phase") +
     theme_minimal(base_size = 14) +
     geom_text(data = gene_avg[gene_avg$Phase=="SMC",], aes(x = Phase, y = mean_beta, label = ID, color = "black"),
               hjust = -0.1, vjust = 0.5, size = 4, show.legend = FALSE)
