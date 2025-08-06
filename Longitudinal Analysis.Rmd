@@ -187,14 +187,14 @@ smc.set.go <- go_region(smc.ranges, "GO")
 ncc_smc.kegg <- go_region(ncc_smc.ranges, "KEGG")
 ncc_smc.go <- go_region(ncc_smc.ranges, "GO")
 ```
+
 ```{r}
 # identify significant genes
 unique(c(smc.set.go$SigGenesInSet,
-         smc.set.kegg$SigGenesInSet,
-         ncc_smc.go$SigGenesInSet,
+         smc.set.kegg$SigGenesInSet))
+unique(c(ncc_smc.go$SigGenesInSet,
          ncc_smc.kegg$SigGenesInSet))
 ```
-
 
 ```{r}
 # annotate probes
@@ -203,21 +203,36 @@ library(tidyr)
 anno.df <- as.data.frame(anno)
 anno.df <- rownames_to_column(anno.df, var = "ID")
 
-annotate_probes <- function(region_results, coef){
+annotate_probes <- function(coef, gene){
   top <- topTable(fit2, number = "Inf", coef = coef) %>% 
     rownames_to_column(var = "ID")
   top <- merge(top, anno.df, by = "ID") %>% # split gene list into individual genes
     dplyr::mutate(UCSC_RefGene_Name = strsplit(as.character(UCSC_RefGene_Name), split = "[,;]")) %>%
     unnest(UCSC_RefGene_Name)
-  return(top)
+  top1 <- top[top$UCSC_RefGene_Name==gene,] %>% 
+    dplyr::mutate(avg.logFC = mean(logFC))
+  return(top1)
 }
 
-# separate by genes of interest
-top.otx1 <- top[top$UCSC_RefGene_Name=="OTX1",]
-top.sdc2 <- top[top$UCSC_RefGene_Name=="SDC2",]
-top.sdk1 <- top[top$UCSC_RefGene_Name=="SDK1",]
-top.bloc1s2
+gene_list <- tibble(
+  coef = c("ipsc_to_smc", "ncc_to_smc", "ipsc_to_smc", "ipsc_to_smc"),
+  gene = c("OTX1", "OTX1", "SDK1", "BLOC1S2")
+)
 
+library(purrr)
+results <- gene_list %>%
+  mutate(result = map2(coef, gene, annotate_probes))
+```
+
+```{r}
+#average methylation status change difference (compared to control)
+library(glue)
+for (i in results[i,1:2]){
+  print(glue("The average LogFC for {results[[name]]} is {round(results$result$avg.LogFC, 3)}"))
+}
+```
+
+```{r}
 # determine overall methylation status of gene
 mean(top.otx1$logFC) #hypermethylated
 mean(top.sdc2$logFC) #hypomethylated, but not noted as a sig gene in region analyses
