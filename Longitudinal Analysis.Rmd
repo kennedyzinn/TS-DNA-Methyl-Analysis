@@ -24,18 +24,25 @@ library(lme4)
 # Load data
 ```{r}
 # load the idat files
-rgSet <- read.metharray.exp("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/dna methyl/within groups/All Phases", force = T)
+rgSet <- read.metharray.exp("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/TS/dna methyl/SPMTS2_Array data/", force = T)
 ```
 
 ```{r}
 # load sample sheet
-sample_sheet <- read_excel("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/dna methyl/within groups/All Phases/sample_sheet_ALL.xlsx")
+sample_sheet <- read_excel("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/TS/dna methyl/Batch3_Sample Sheet_modified.xlsx",
+                         skip = 9,
+                         na="NA",
+                         n_max=8
+                         )
+sample_sheet <- sample_sheet[,1:7] %>% 
+  mutate(lineage = ifelse(Phase!="EC", 0, 1))
+rownames(sample_sheet) <- paste(sample_sheet$`Sentrix ID`, sample_sheet$`Sentrix Position`, sep = "_")
 ```
 
 # Pre-processing
 
 ```{r}
-source("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/dna methyl/process_methyl_microarray.R")
+source("/Users/kennedyzinn/Desktop/Prakash Lab/TS Batch3 DNA Methylation Analysis/process_methyl_microarray.R")
 gmSet <- process_methyl_microarray(rgSet)
 ```
 
@@ -47,7 +54,8 @@ where yi methyl and unmethyl are the intensities measured by the ith methylated 
 
 ```{r, echo = FALSE}
 # Compute beta values
-beta_values <- getBeta(gmSet)
+beta_values <- getBeta(gmSet) 
+beta_values <- beta_values[,colnames(beta_values) %in% rownames(sample_sheet)]
 colnames(beta_values) <- sample_sheet$`Sample Name`
 ```
 
@@ -68,32 +76,24 @@ M values are more statistically sound than beta values.
 ```{r}
 # Compute M values
 Mval <- getM(gmSet)
+Mval <- Mval[,colnames(Mval) %in% rownames(sample_sheet)]
 dim(Mval)
 ```
 
-Most variation seems explained by phase (PC1) and ID (PC2). However, proportion of variation is low ((lambda1+lambda2)/total var = 35%)
 
 ```{r}
 # PCA of M values
 par(mfrow=c(1,1), cex =.5)
-plotMDS(Mval, labels=sample_sheet$Status, col=as.integer(factor(sample_sheet$Phase)))
-legend("top",legend=c("IPSC", "NCC", "SMC"), col=as.integer(factor(sample_sheet$Phase)))
+plotMDS(Mval, labels=sample_sheet$Karyotype, col=as.integer(factor(sample_sheet$Phase)))
+legend("top",legend=c("IPSC", "NCC", "EC"), col=as.integer(factor(sample_sheet$Phase)))
 ```
 
 PC1 and PC2 by disease status
 
 ```{r}
 par(mfrow=c(1,1), cex =.5)
-plotMDS(Mval, labels=sample_sheet$`Sentrix ID`, col=as.integer(factor(sample_sheet$Status)))
-legend("top",legend=c("Control", "Patient"), col=1:2)
-```
-
-PC3 and PC4
-
-```{r}
-par(mfrow=c(1,1), cex =.5)
-plotMDS(Mval, labels=sample_sheet$Phase, col=as.integer(factor(sample_sheet$Status)), dim.plot = 3:4)
-legend("top",legend=c("Control","Patient"),col=1:2)
+plotMDS(Mval, labels=sample_sheet$`Sample Name`, col=as.integer(factor(sample_sheet$Karyotype)))
+legend("top",legend=c("46XX", "45X"), col=1:2)
 ```
 
 # Differential Methylation Analysis
@@ -107,94 +107,64 @@ rownames(sample_sheet) <- paste(sample_sheet$`Sentrix ID`, sample_sheet$`Sentrix
 sample_sheet <- sample_sheet[colnames(Mval),]
 
 # regular interaction model
-disease <- factor(sample_sheet$Status)
-phase <- factor(sample_sheet$Phase)
-sentrixID <- factor(sample_sheet$`Sentrix ID`)
-gender <- factor(sample_sheet$Gender)
+sample_sheet <- sample_sheet %>% 
+  dplyr::mutate(kary_f = ifelse(Karyotype!="45X", 0,1))
 
-design <- model.matrix(~gender+sentrixID+disease*phase)
+disease <- factor(sample_sheet$kary_f)
+lineage <- factor(sample_sheet$lineage)
+```
+
+```{r}
+# repeat analysis but with contrasts to delineate changes between phases
+
+design <- model.matrix(~lineage*disease)
+
 fit <- lmFit(Mval, design)
-fit <- eBayes(fit)
-top <- topTable(fit, coef=8:9, number = "Inf")
+fit2 <- eBayes(fit)
+top <- topTable(fit2, number = "Inf")
 top
 ```
 ```{r}
-# repeat analysis but with contrasts to delineate changes between phases
-design <- model.matrix(~0+gender+sentrixID+disease*phase)
-colnames(design) <- make.names(colnames(design))
-cont.dif <- makeContrasts(
-    ncc_to_smc=(diseasepatient.phaseSMC-diseasepatient.phaseNCC),
-    ipsc_to_smc = diseasepatient.phaseSMC,
-    ipsc_to_ncc = diseasepatient.phaseNCC,
-  levels = design
-)
-fit2 <- contrasts.fit(fit, cont.dif)
-fit2 <- eBayes(fit2)
-top <- topTable(fit2, number = "Inf")
-top
+# difference in methylation changes from ipsc OR NCC to EC in aneuploid compared to euploid
+topTable(fit2, coef = 4)
 ```
 
 ## Kegg Region Analysis
 ```{r}
-region <- function(coef){
-  myAnnotation <- cpg.annotate(datatype = "array", object = Mval, what = "M",
+myAnnotation <- cpg.annotate(datatype = "array", object = Mval, what = "M",
                              arraytype = "EPICv1",
-                             analysis.type = "differential", design = design, contrasts = T, cont.matrix = cont.dif, coef = coef)
-  if (sum(myAnnotation@ranges@elementMetadata@listData$is.sig)==0) {
-    return(NULL)
-  } else {
-    DMRs <- suppressMessages(dmrcate(myAnnotation))
-  results.ranges <- extractRanges(DMRs, genome="hg19")
-    return(results.ranges)
-  }
-}
-
-# cpg.annotate() cannot test more than one coefficient at once
-# ipsc - NCC
-ncc.ranges <- region("ipsc_to_ncc")
-
-# ipsc - SMC
-smc.ranges <- region("ipsc_to_smc")
-
-# ncc to smc
-ncc_smc.ranges <- region("ncc_to_smc")
+                             analysis.type = "differential", design = design, contrasts = F, coef = 4)
+DMRs <- suppressMessages(dmrcate(myAnnotation))
+results.ranges <- extractRanges(DMRs, genome="hg38")
 ```
 
 ```{r}
-library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
-anno <- getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+library(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
+anno <- getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
 
-# testing Yan's gene
-smc.region <- gsaregion(smc.ranges, all.cpg = rownames(top), collection="6383", array.type="EPIC", anno=anno)
-
-topGSA(smc.region)
+region <- goregion(results.ranges, all.cpg = rownames(top), collection = "KEGG", array.type="EPIC", anno=anno, sig.genes=T)
 ```
 ```{r}
-ncc_to_smc.region <- gsaregion(ncc_smc.ranges, all.cpg = rownames(top), collection = "6383", array.type = "EPIC", anno=anno)
-topGSA(ncc_to_smc.region)
-```
-
-
-```{r}
-# overall gene set testing
-go_region <- function(granges, collection){
-  set <- goregion(granges, all.cpg = rownames(top), collection = collection, array.type="EPIC", anno=anno, sig.genes = T)
-  return(set)
-}
-
-smc.set.kegg <- go_region(smc.ranges, "KEGG")
-smc.set.go <- go_region(smc.ranges, "GO")
-ncc_smc.kegg <- go_region(ncc_smc.ranges, "KEGG")
-ncc_smc.go <- go_region(ncc_smc.ranges, "GO")
+topGSA(region, number = "Inf")
 ```
 
 ```{r}
-# identify significant genes
-unique(c(smc.set.go$SigGenesInSet,
-         smc.set.kegg$SigGenesInSet))
-unique(c(ncc_smc.go$SigGenesInSet,
-         ncc_smc.kegg$SigGenesInSet))
+# pull DMRs mapped to x chromosome
+x.ranges <- results.ranges[seqnames(results.ranges)=="chrX",]
+x_gsa <- goregion(x.ranges, all.cpg = rownames(top), collection = "KEGG", array.type="EPIC", anno=anno, sig.genes=T)
+topGSA(x_gsa, number = "Inf")
 ```
+```{r}
+# pull list of significant genes
+library(tibble)
+library(tidyr)
+x_results <- topGSA(x_gsa, number = "Inf")
+x_genes <- x_results%>% 
+  dplyr::mutate(SigGenes = strsplit(as.character(SigGenesInSet), split=",")) %>% 
+  unnest(SigGenes)
+gene_list <- unique(x_genes$SigGenes)
+```
+
 
 ```{r}
 # pull cpgs associated with significant genes
@@ -203,24 +173,12 @@ library(tidyr)
 anno.df <- as.data.frame(anno)
 anno.df <- rownames_to_column(anno.df, var = "ID")
 
-annotate_probes <- function(coef, gene){
-  top <- topTable(fit2, number = "Inf", coef = coef) %>% 
-    rownames_to_column(var = "ID")
-  top <- merge(top, anno.df, by = "ID") %>% # split gene list into individual genes
-    dplyr::mutate(UCSC_RefGene_Name = strsplit(as.character(UCSC_RefGene_Name), split = "[,;]")) %>%
-    unnest(UCSC_RefGene_Name)
-  top1 <- top[top$UCSC_RefGene_Name==gene,]
-  return(top1)
-}
-
-gene_list <- tibble(
-  coef = c("ipsc_to_smc", "ncc_to_smc", "ipsc_to_smc", "ipsc_to_smc"),
-  gene = c("OTX1", "OTX1", "SDK1", "BLOC1S2")
-)
-
-library(purrr)
-results <- gene_list %>%
-  mutate(result = map2(coef, gene, annotate_probes))
+top <- topTable(fit2, number = "Inf", coef = 4) %>%
+  rownames_to_column(var = "ID")
+top <- merge(top, anno.df, by = "ID") %>% # split gene list into individual genes
+  dplyr::mutate(UCSC_RefGene_Name = strsplit(as.character(UCSC_RefGene_Name), split = "[,;]")) %>%
+  unnest(UCSC_RefGene_Name)
+top1 <- top[top$UCSC_RefGene_Name==gene,]
 ```
 
 ```{r}

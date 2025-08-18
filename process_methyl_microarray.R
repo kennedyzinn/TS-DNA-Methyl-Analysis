@@ -25,13 +25,6 @@ process_methyl_microarray <- function(rgSet){
   keep <- !(featureNames(gmSet) %in% xreactive_probes)
   gmSet <- gmSet[keep,]
   
-  # Remove probes mapping to sex chromosomes
-  library(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
-  data(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
-  ann <- getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
-  keep <- !(featureNames(gmSet) %in% ann$Name[ann$chr %in% c("chrX", "chrY")])
-  gmSet <- gmSet[keep, ]
-  
   # make gmSet available in the global environment so M values and Beta values can be saved
   return(gmSet)
 }
