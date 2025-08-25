@@ -1,0 +1,276 @@
+---
+title: "DNA methylation analysis of SMC phase"
+author: "Kennedy Zinn"
+date: "2025-02-07"
+output: html_document
+toc: TRUE
+---
+
+```{r, echo = FALSE}
+suppressPackageStartupMessages(library(minfi))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(DMRcate))
+suppressPackageStartupMessages(library(maxprobes))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(missMethyl))
+suppressPackageStartupMessages(library(MethylToSNP))
+library(RColorBrewer)
+```
+
+# Load data
+```{r}
+# load the idat files
+rgSet <- read.metharray.exp("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/TS/dna methyl/SPMTS2_Array data/", force = T)
+```
+
+```{r}
+# load sample sheet
+sample_sheet <- read_excel("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/TS/dna methyl/Batch3_Sample Sheet_modified.xlsx",
+                         skip = 9,
+                         na="NA",
+                         n_max=8
+                         )
+sample_sheet <- sample_sheet[,1:7] %>% 
+  dplyr::filter(Phase!="NCC")
+rownames(sample_sheet) <- paste(sample_sheet$`Sentrix ID`, sample_sheet$`Sentrix Position`, sep = "_")
+```
+
+# Pre-processing
+
+```{r}
+source("/Users/kennedyzinn/Desktop/Prakash Lab/TS Batch3 DNA Methylation Analysis/process_methyl_microarray.R")
+gmSet <- process_methyl_microarray(rgSet)
+```
+
+Beta values, which range between [0,1], represent the proportion of methylated DNA copies at a specific CpG site compared to all of the DNA copies at that site. Beta values for the ith CpG site are mathematically defined as,
+
+Beta(i) = max(yi(methyl),0) / [max(yi(unmethyl), 0) + max(yi(methyl), 0) + alpha],
+
+where yi methyl and unmethyl are the intensities measured by the ith methylated and unmethylated probes, respectively. 0 ensures that negative signals that take place after background adjustment are not considered. Alpha, a constant (usually 100), serves as an offset to regularize beta when both methylated and unmethylated instensities are low. Beta values are intuitive, and hence useful for visual presentations of the reads. (Du et al., 2010)
+
+```{r, echo = FALSE}
+# Compute beta values
+beta_values <- getBeta(gmSet) 
+beta_values <- beta_values[,colnames(beta_values) %in% rownames(sample_sheet)]
+colnames(beta_values) <- sample_sheet$`Sample Name`
+```
+
+M values are log transformed beta values. Negative M values indicate higher levels of unmethylated DNA copies than methylated DNA copies. Postive M values indicate higher levels of methylated DNA copies than unmethylated. M values close to zero indicate similar intensities between methylated and unmethylated probes. M values are mathematically expressed as,
+
+M(i) = log2([max(yi(methyl))+alpha]/[max(yi(unmethyl))+alpha])
+
+where alpha is a constant to offset dramatic changes resulting from small estimation errors. M values can be expressed in terms of beta values,
+
+M(i) = log2(Beta(i)/[1 - Beta(i)])
+
+and therefore, beta values can be expressed in terms of M values,
+
+Beta(i) = 2\^M(i) / [2\^M(i) + 1]
+
+M values are more statistically sound than beta values.
+
+```{r}
+# Compute M values
+Mval <- getM(gmSet)
+Mval <- Mval[,colnames(Mval) %in% rownames(sample_sheet)]
+dim(Mval)
+```
+
+```{r}
+# sanity check
+par(mfrow=c(1,1), cex =.5)
+plotMDS(Mval, labels=sample_sheet$`Sample Name`, col=as.integer(factor(sample_sheet$Karyotype)))
+legend("top",legend=c("46XX", "45X", "46XisoXq"), col=1:2)
+```
+
+## Differential Methylation Analysis
+
+# Differential Methylation Analysis
+
+```{r}
+# match column names of Mval to row names of sample sheet
+sample_sheet <- as.data.frame(sample_sheet)
+rownames(sample_sheet) <- paste(sample_sheet$`Sentrix ID`, sample_sheet$`Sentrix Position`, sep = "_")
+
+# reorder sample sheet to match row names to column names of Mval
+sample_sheet <- sample_sheet[colnames(Mval),]
+
+# regular interaction model
+phase <- factor(sample_sheet$Phase, labels=c("iPSC", "EC"))
+```
+
+```{r}
+# Phase
+design <- model.matrix(~phase, data = sample_sheet)
+fit <- lmFit(Mval, design)
+fit2 <- eBayes(fit)
+top <- topTable(fit2, number = "Inf")
+top
+```
+
+
+## KEGG Region Level Analysis
+
+```{r}
+myAnnotation <- cpg.annotate(datatype = "array", object = Mval, what = "M",
+                             arraytype = "EPICv1",
+                             analysis.type = "differential", design = design, contrasts = F, coef=2)
+DMRs <- suppressMessages(dmrcate(myAnnotation))
+results.ranges <- extractRanges(DMRs, genome="hg38")
+```
+
+```{r}
+library(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
+anno <- getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
+
+region <- goregion(results.ranges, all.cpg = rownames(top), collection = "KEGG", array.type="EPIC", anno=anno, sig.genes=T)
+```
+
+```{r}
+topGSA(region, number = "Inf")
+```
+
+```{r}
+# pull DMRs mapped to x chromosome
+x.ranges <- results.ranges[seqnames(results.ranges)=="chrX",]
+x_gsa <- goregion(x.ranges, all.cpg = rownames(top), collection = "GO", array.type="EPIC", anno=anno, sig.genes=T)
+topGSA(x_gsa, number = "Inf")
+```
+```{r}
+# set up the grouping variables and colors
+cols <- c(2,4)[phase]
+names(cols) <- phase
+
+# draw the plot for the top DMR
+par(mfrow=c(1,1))
+DMR.plot(ranges=x.ranges, dmr=1, CpGs=beta_values, phen.col=cols, what = "Beta",
+         arraytype = "EPICv1",
+         genome="hg38")
+```
+
+# Pathway Analysis by Methylation Direction
+
+## Identify the direction of significant gene sets
+
+```{r}
+top <- topGSA(x_gsa, number = "Inf")
+sig.GeneSets <- unique(top$SigGenesInSet)
+# Split the gene sets into individual genes
+split_genes <- function(gene_set) {
+ unlist(strsplit(gene_set, split = "[,]"))
+}
+
+# Apply the splitting function to all significant gene sets
+all_genes <- unique(unlist(lapply(sig.GeneSets, split_genes)))
+```
+
+```{r}
+
+# Annotate probes
+library(tibble)
+top <- rownames_to_column(top, var = "ID")
+anno <- as.data.frame(anno)
+anno <- rownames_to_column(anno, var = "ID")
+top <- merge(top, anno, by = "ID")
+```
+
+```{r}
+# Split UCSC_RefGene_Name into individual genes
+library(tidyr)
+top <- top %>%
+  mutate(UCSC_RefGene_Name = strsplit(as.character(UCSC_RefGene_Name), split = "[,;]")) %>%
+  unnest(UCSC_RefGene_Name)
+
+# Filter for significant gene sets
+filteredResults <- top[top$UCSC_RefGene_Name %in% all_genes, ]
+```
+
+```{r}
+# Summarize methylation status for each significant gene set
+methylationSummary <- sapply(all_genes, function(gene) {
+ probes <- filteredResults[filteredResults$UCSC_RefGene_Name == gene, ]
+ avgLogFC <- mean(probes$logFC)
+ return(avgLogFC)
+})
+```
+
+```{r}
+# Determine methylation status
+methylationStatus <- ifelse(methylationSummary > 0, "Hypermethylated", "Hypomethylated")
+
+# Combine results into a data frame
+results <- data.frame(GeneSet = all_genes, MethylationStatus = methylationStatus)
+
+print(results)
+```
+
+## Pathway analysis of genes by methylation direction
+
+```{r, echo = F}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+source("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/dna methyl/gene.list.R")
+# create gene list of hypermethylated genes
+hyper.gene.list <- gene.list("Hypermethylated")
+
+# create gene list of hypomethylated genes
+hypo.gene.list <- gene.list("Hypomethylated")
+```
+
+### GO
+
+```{r}
+# hypermethylated gene sets
+go.hyper.enrich <- enrichGO(gene = hyper.gene.list, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "ALL")
+
+# hypomethylated gene sets
+go.hypo.enrich <- enrichGO(gene = hypo.gene.list, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "ALL")
+
+# add column specifying methylation direction
+go.hyper.enrich <- as.data.frame(go.hyper.enrich)
+go.hyper.enrich$MethylationStatus = "Hypermethylated"
+
+go.hypo.enrich <- as.data.frame(go.hypo.enrich)
+go.hypo.enrich$MethylationStatus = "Hypomethylated"
+
+# merge data sets
+go.enrich <- rbind(go.hyper.enrich, go.hypo.enrich)
+```
+
+### KEGG
+
+```{r}
+# hypermethylated gene sets
+kegg.hyper.enrich <- enrichKEGG(gene = hyper.gene.list, organism = "hsa")
+
+# hypomethylated gene sets
+kegg.hypo.enrich <- enrichKEGG(gene = hypo.gene.list, organism = "hsa")
+
+# add column specifying methylation direction
+kegg.hyper.enrich <- as.data.frame(kegg.hyper.enrich)
+kegg.hyper.enrich$MethylationStatus = "Hypermethylated"
+
+kegg.hypo.enrich <- as.data.frame(kegg.hypo.enrich)
+kegg.hypo.enrich$MethylationStatus = "Hypomethylated"
+
+# merge data sets
+kegg.enrich <- rbind(kegg.hyper.enrich, kegg.hypo.enrich)
+```
+
+Certain interesting gene sets can be pulled in order to determine whether the gene set is significantly hyper or hypomethylated.
+
+```{r}
+kegg.enrich[kegg.enrich$ID == "hsa04740", 15]
+```
+
+# Export Results
+
+```{r}
+write.csv(kegg.enrich, "kegg_SMC_enrichment_results.csv")
+write.csv(go.enrich, "go_SMC_enrichment_results.csv")
+
+# create csv of gene list
+capture.output(compact(hyper.gene.list), file = "SMC_hypermethyl_genes.txt")
+capture.output(compact(hypo.gene.list), file = "SMC_hypomethyl_genes.txt")
+```
