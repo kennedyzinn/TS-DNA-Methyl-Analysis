@@ -96,7 +96,7 @@ sample_sheet <- sample_sheet[colnames(Mval),]
 
 # regular interaction model
 phase <- factor(sample_sheet$Phase, labels=c("iPSC", "EC"))
-chr <- factor(sample_sheet$Karyotype, labels=c("45X","46XX"))
+chr <- factor(sample_sheet$Karyotype, labels=c("46XX","45X"))
 patient <- factor(sample_sheet$Patient)
 ```
 
@@ -125,10 +125,16 @@ library(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
 anno <- getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
 
 gst.region.kegg <- goregion(results.ranges, all.cpg = rownames(top), collection = "KEGG", array.type="EPIC", anno=anno, sig.genes=T)
+
+top.kegg <- topGSA(gst.region.kegg, number = "Inf")
+top.kegg <- top.kegg[top.kegg$FDR<0.05,]
 ```
 
 ```{r}
 gst.region.go <- goregion(results.ranges, all.cpg = rownames(top), collection = "GO", array.type="EPIC", anno=anno, sig.genes=T)
+
+top.go <- topGSA(gst.region.go, number = "Inf")
+top.go <- top.go[top.go$FDR<0.05,]
 ```
 
 ```{r}
@@ -150,10 +156,6 @@ hallmark_gs_list <- list("HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION" = emt_gene
 
 ```{r}
 gsa.region <- gsaregion(results.ranges, all.cpg = rownames(top), collection = hallmark_gs_list, array.type="EPIC", anno=anno, sig.genes=T)
-```
-
-```{r}
-topGSA(gsa.region)
 ```
 
 # Pathway Analysis by Methylation Direction
@@ -228,14 +230,13 @@ hypo.gene.list <- gene.list("Hypomethylated")
 ### GO
 
 ```{r}
+if(nrow(top.go)>0){
 # hypermethylated gene sets
 go.hyper.enrich <- enrichGO(gene = hyper.gene.list, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "ALL")
 
 # hypomethylated gene sets
 go.hypo.enrich <- enrichGO(gene = hypo.gene.list, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "ALL")
-```
 
-```{r}
 # add column specifying methylation direction
 go.hyper.enrich <- as.data.frame(go.hyper.enrich)
 if (nrow(go.hyper.enrich)>0) {
@@ -245,15 +246,18 @@ if (nrow(go.hyper.enrich)>0) {
 go.hypo.enrich <- as.data.frame(go.hypo.enrich)
 if (nrow(go.hypo.enrich)>0) {
   go.hypo.enrich$MethylationStatus = "Hypomethylated"
-} 
+}
 
 # merge data sets
 go.enrich <- rbind(go.hyper.enrich, go.hypo.enrich)
+go.enrich <- go.enrich[rownames(go.enrich) %in% rownames(top.go),]
+}
 ```
 
 ### KEGG
 
 ```{r}
+if(nrow(top.kegg)>0){
 # hypermethylated gene sets
 kegg.hyper.enrich <- enrichKEGG(gene = hyper.gene.list, organism = "hsa")
 
@@ -262,23 +266,19 @@ kegg.hypo.enrich <- enrichKEGG(gene = hypo.gene.list, organism = "hsa")
 
 # add column specifying methylation direction
 kegg.hyper.enrich <- as.data.frame(kegg.hyper.enrich)
-if (nrow(kegg.hyper.enrich)<0) {
+if (nrow(kegg.hyper.enrich)>0) {
   kegg.hyper.enrich$MethylationStatus = "Hypermethylated"
 }
 
 kegg.hypo.enrich <- as.data.frame(kegg.hypo.enrich)
-if (nrow(kegg.hypo.enrich)<0) {
+if (nrow(kegg.hypo.enrich)>0) {
   kegg.hypo.enrich$MethylationStatus = "Hypomethylated"
-}
+} 
 
 # merge data sets
 kegg.enrich <- rbind(kegg.hyper.enrich, kegg.hypo.enrich)
-```
-
-Certain interesting gene sets can be pulled in order to determine whether the gene set is significantly hyper or hypomethylated.
-
-```{r}
-kegg.enrich[kegg.enrich$ID == "hsa04740", 15]
+kegg.enrich <- kegg.enrich[rownames(kegg.enrich) %in% rownames(top.kegg),]
+}
 ```
 
 # Visualize gene lists
@@ -311,7 +311,6 @@ ggsave(glue("gene_plot_interaction_{descriptor}.pdf"), gene_plot, width = 8, hei
 gene_plot(endmt.results, "ENDMT")
 gene_plot(results, "ALL")
 ```
-
 
 ```{r}
 # pull cpgs associated with significant genes
@@ -394,10 +393,17 @@ ggsave("gene_profiles_endmt.pdf", combined_plot, width = 9, height = 6)
 # Export Results
 
 ```{r}
-write.csv(kegg.enrich, "kegg_interaction_enrichment_results.csv")
-write.csv(go.enrich, "go_interaction_enrichment_results.csv")
+if(nrow(kegg.enrich)>0){
+  write.csv(kegg.enrich, "kegg_interaction_enrichment_results.csv")
+}
 
-# create csv of gene list
-capture.output(compact(hyper.gene.list), file = "interaction_hypermethyl_genes.txt")
-capture.output(compact(hypo.gene.list), file = "interaction_hypomethyl_genes.txt")
+if(nrow(go.enrich)>0){
+  write.csv(go.enrich, "go_interaction_enrichment_results.csv")
+  top.go <- topGSA(gst.region.go, number = "Inf")
+}
+
+write.csv(top.kegg, "interaction_kegg_region.csv")
+write.csv(top.go, "interaction_go_region.csv")
+
+write.csv(results, "interaction_genes.csv")
 ```
