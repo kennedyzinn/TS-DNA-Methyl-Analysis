@@ -163,7 +163,7 @@ gsa.region <- gsaregion(results.ranges, all.cpg = rownames(top), collection = ha
 ## Identify the direction of significant gene sets
 ```{r}
 sig.Genes.all <- unique(c(gst.region.go$SigGenesInSet,
-                         gst.region.kegg$SigGenesInSet))
+                         gst.region.kegg$SigGenesInSet, "TIMP3"))
 sig.genes.endmt <- unique(gsa.region$SigGenesInSet)
 
 sig.gene.list <- function(sig.GeneSets){
@@ -334,6 +334,13 @@ endmt.probes <- endmt.results %>%
   mutate(result = lapply(Gene, annotate_probes))
 ```
 
+```{r}
+# for checking TIMP3 trajectory
+TIMP3.probes <- results[results$Gene=="TIMP3",] %>% 
+  mutate(result = lapply(Gene, annotate_probes))
+```
+
+
 # Visualize profiles for genes of interest
 ```{r}
 # plot beta value per ID gene x group x phase
@@ -345,9 +352,11 @@ sample_sheet <- sample_sheet %>%
 
 plot_list <- list()
 
-for (gene in endmt.probes$Gene){
+probe = TIMP3.probes #TIMP3.probes or endmt.probes
+
+for (gene in probe){
   
-  cpgs_on_gene <- endmt.probes[endmt.probes$Gene==gene,]$result[[1]]$ID
+  cpgs_on_gene <- probe[probe$Gene==gene,]$result[[1]]$ID
 
   gene_beta <- beta_values[cpgs_on_gene,]
 
