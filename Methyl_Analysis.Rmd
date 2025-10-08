@@ -94,15 +94,14 @@ rownames(sample_sheet) <- paste(sample_sheet$Sentrix_ID, sample_sheet$Sentrix_Po
 # reorder sample sheet to match row names to column names of Mval
 sample_sheet <- sample_sheet[colnames(Mval),]
 
-# regular interaction model
+
 phase <- factor(sample_sheet$Phase, labels=c("iPSC", "EC"))
 chr <- factor(sample_sheet$Karyotype, labels=c("46XX","45X"))
 patient <- factor(sample_sheet$Patient)
 ```
 
 ```{r}
-#mixed effects model
-library(lme4)
+# interaction model
 design <- model.matrix(~patient+phase*chr, data = sample_sheet)
 fit <- lmFit(Mval, design)
 fit2 <- eBayes(fit)
@@ -142,7 +141,7 @@ top.go <- top.go[top.go$FDR<0.05,]
 library(msigdbr)
 library(dplyr)
 
-# Get the Hallmark gene sets for Homo sapiens (Human)
+# Get the Hallmark gene sets for humans
 m_df <- msigdbr(species = "Homo sapiens", category = "H")
 
 # Filter for the specific gene set and get the gene list

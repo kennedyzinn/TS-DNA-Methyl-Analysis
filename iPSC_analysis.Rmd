@@ -345,7 +345,8 @@ gene_plot <- ggplot(res, aes(x = MethylationStatus, y = Gene)) +
   scale_size_continuous(name = "Methylation\nLevel", guide = "none") +
   scale_color_manual(values = c("Hypermethylated" = "red", 
                                "Hypomethylated" = "blue"),
-                     name = "MethylationStatus") +
+                     name = "MethylationStatus",
+                     guide = "none") +
   theme_minimal(base_family = "serif") +
   labs(x = "Average Difference (Beta-value)", 
        y = "Gene",
