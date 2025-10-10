@@ -7,14 +7,19 @@ output: html_document
 
 
 ```{r}
-suppressPackageStartupMessages(library(minfi))
-suppressPackageStartupMessages(library(limma))
-suppressPackageStartupMessages(library(DMRcate))
-suppressPackageStartupMessages(library(maxprobes))
-suppressPackageStartupMessages(library(readxl))
-suppressPackageStartupMessages(library(dplyr))
-suppressPackageStartupMessages(library(missMethyl))
-suppressPackageStartupMessages(library(MethylToSNP))
+library(minfi)
+library(limma)
+library(DMRcate)
+library(maxprobes)
+library(readxl)
+library(dplyr)
+library(missMethyl)
+library(MethylToSNP)
+library(glue)
+```
+
+```{r}
+cell_phase = "EC" # either iPSC or EC
 ```
 
 # Load data
@@ -30,7 +35,7 @@ sample_sheet <- read_excel("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houst
                          na="NA"
                          )
 sample_sheet <- sample_sheet[,1:10] %>% 
-  dplyr::filter(Phase=="iPSC") %>% 
+  dplyr::filter(Phase==cell_phase) %>% 
   dplyr::filter(Karyotype!="46XisoXq") %>% 
   dplyr::filter(Phase!="NA")
 rownames(sample_sheet) <- paste(sample_sheet$Sentrix_ID, sample_sheet$Sentrix_Position, sep = "_")
@@ -39,7 +44,7 @@ rownames(sample_sheet) <- paste(sample_sheet$Sentrix_ID, sample_sheet$Sentrix_Po
 # Pre-processing
 
 ```{r}
-source("/Users/kennedyzinn/Desktop/Prakash Lab/TS Batch3 DNA Methylation Analysis/process_methyl_microarray.R")
+source("./process_methyl_microarray.R")
 gmSet <- process_methyl_microarray(rgSet)
 ```
 
@@ -79,9 +84,13 @@ dim(Mval)
 
 ```{r}
 # PCA of M values
+disease <- factor(sample_sheet$Karyotype, levels = c("46XX", "45X"))
+
+pdf(glue("MDS_plot_{cell_phase}.pdf"))
 par(mfrow=c(1,1), cex =.5)
-plotMDS(Mval, labels=sample_sheet$Sample_Name, col=as.integer(factor(sample_sheet$Karyotype)))
-legend("top",legend=c("45X", "46XX"), col=as.integer(factor(sample_sheet$Karyotype)))
+plotMDS(Mval, labels=sample_sheet$Sample_Name, col=as.integer(disease))
+legend("top",legend=c("45X", "46XX"), col=as.integer(disease))
+dev.off()
 ```
 
 # Differential Methylation Analysis
@@ -95,7 +104,7 @@ rownames(sample_sheet) <- paste(sample_sheet$`Sentrix_ID`, sample_sheet$`Sentrix
 sample_sheet <- sample_sheet[colnames(Mval),]
 
 # factor covariates
-disease <- factor(sample_sheet$Karyotype, levels = c("46XX", "45X"))
+
 patient <- factor(sample_sheet$Patient)
 ```
 
@@ -134,7 +143,6 @@ top.kegg <- top.kegg[top.kegg$FDR<0.05,]
 ```{r}
 # Load msigdbr and dplyr for data manipulation
 library(msigdbr)
-library(dplyr)
 
 # Get the Hallmark gene sets for Homo sapiens (Human)
 m_df <- msigdbr(species = "Homo sapiens", category = "H")
@@ -156,6 +164,7 @@ gsa.region <- gsaregion(results.ranges, all.cpg = rownames(top), collection = ha
 
 ## Identify the direction of significant gene sets
 ```{r}
+library(tibble)
 sig.Genes.all <- unique(c(gst.region.go$SigGenesInSet,
                          gst.region.kegg$SigGenesInSet))
 sig.genes.endmt <- unique(gsa.region$SigGenesInSet)
@@ -170,7 +179,6 @@ split_genes <- function(gene_set) {
 all_genes <- unique(unlist(lapply(sig.GeneSets, split_genes)))
 
 # Annotate probes
-library(tibble)
 top <- rownames_to_column(top, var = "ID")
 anno <- as.data.frame(anno)
 anno <- rownames_to_column(anno, var = "ID")
@@ -207,13 +215,12 @@ endmt.results <- sig.gene.list(sig.genes.endmt)
 results <- sig.gene.list(sig.Genes.all)
 ```
 
-
 ## Pathway analysis of genes by methylation direction
 
 ```{r, echo = F}
 library(clusterProfiler)
 library(org.Hs.eg.db)
-source("/Users/kennedyzinn/Desktop/Prakash Lab/TS Batch3 DNA Methylation Analysis/gene.list.R")
+source("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/Prakash Lab/TS Batch3 DNA Methylation Analysis/gene.list.R")
 # create gene list of hypermethylated genes
 hyper.gene.list <- gene.list("Hypermethylated")
 
@@ -350,9 +357,9 @@ gene_plot <- ggplot(res, aes(x = MethylationStatus, y = Gene)) +
   theme_minimal(base_family = "serif") +
   labs(x = "Average Difference (Beta-value)", 
        y = "Gene",
-       title = glue("Differentially Methylated Genes of iPSCs")) +
+       title = glue("Differentially Methylated Genes of {cell_phase}")) +
   geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5)
-ggsave(glue("gene_plot_iPSC_{descriptor}.pdf"), gene_plot, width = 8, height = 8)
+ggsave(glue("gene_plot_{cell_phase}_{descriptor}.pdf"), gene_plot, width = 8, height = 8)
 }
 
 gene_plot(endmt.results, "ENDMT")
@@ -361,18 +368,18 @@ gene_plot(endmt.results, "ENDMT")
 # Export Results
 
 ```{r}
-if(nrow(kegg.enrich)>0){
-  write.csv(kegg.enrich, "kegg_IPSC_enrichment_results.csv")
+if(exists("kegg.enrich")==TRUE){
+  write.csv(kegg.enrich, glue("kegg_{cell_phase}_enrichment_results.csv"))
 }
 
-if(nrow(go.enrich)>0){
-  write.csv(go.enrich, "go_IPSC_enrichment_results.csv")
+if(exists("go.enrich")==TRUE){
+  write.csv(go.enrich, glue("go_{cell_phase}_enrichment_results.csv"))
   top.go <- topGSA(gst.region.go, number = "Inf")
 }
 
-write.csv(top.kegg, "IPSC_kegg_region.csv")
-write.csv(top.go, "IPSC_go_region.csv")
+write.csv(top.kegg, glue("{cell_phase}_kegg_region.csv"))
+write.csv(top.go, glue("{cell_phase}_go_region.csv"))
 
 # create csv of gene list
-write.csv(results, "IPSC_genes.csv")
+write.csv(results, glue("{cell_phase}_genes.csv"))
 ```
