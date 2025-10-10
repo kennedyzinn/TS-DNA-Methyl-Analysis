@@ -363,6 +363,7 @@ ggsave(glue("gene_plot_{cell_phase}_{descriptor}.pdf"), gene_plot, width = 8, he
 }
 
 gene_plot(endmt.results, "ENDMT")
+gene_plot(results, "ALL")
 ```
 
 # Export Results
