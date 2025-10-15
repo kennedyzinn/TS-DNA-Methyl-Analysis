@@ -117,6 +117,17 @@ top <- topTable(fit2, number = "Inf", coef=2) # diff in karyotype, while control
 top
 ```
 
+```{r}
+# print proportion of sig CpGs hyper and hypo methylated
+sig.cpg <- top[top$adj.P.Val<0.05,]
+t <-table(sig.cpg$logFC<0)
+
+hyper.proportion <- t[1]/nrow(sig.cpg)
+hypo.proportion <- t[2]/nrow(sig.cpg)
+
+glue("{nrow(sig.cpg)} probes are significantly differentially methylated in 45XO cells compared to 46XX cells. The proportion of hypermethylated CpG sites is {hyper.proportion}. The proportion of hypomethylated CpG sites is {hypo.proportion}.")
+```
+
 ## Kegg Region Analysis
 ```{r}
 myAnnotation <- cpg.annotate(datatype = "array", object = Mval, what = "M",
