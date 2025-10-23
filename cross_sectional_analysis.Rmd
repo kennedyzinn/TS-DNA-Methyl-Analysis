@@ -5,29 +5,16 @@ date: "2025-07-21"
 output: html_document
 ---
 
-
 ```{r}
-library(minfi)
-library(limma)
-library(DMRcate)
-library(maxprobes)
-library(readxl)
-library(dplyr)
-library(missMethyl)
-library(MethylToSNP)
-library(glue)
+packages <- c("minfi", "limma", "DMRcate", "maxprobes", "readxl", "dplyr", "missMethyl", "MethylToSNP", "glue", "IlluminaHumanMethylationEPICanno.ilm10b5.hg38", "msigdbr", "tibble", "tidyr", "clusterProfiler", "org.Hs.eg.db", "purrr", "GenomicRanges", "ggplot2")
+sapply(packages, library, character.only = TRUE)
 ```
 
 ```{r}
-cell_phase = "EC" # either iPSC or EC
+cell_phase = "iPSC" # either iPSC or EC
 ```
 
 # Load data
-```{r}
-# load the idat files
-rgSet <- read.metharray.exp("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/TS/dna methyl/SPMTS2_Array data/", force = T)
-```
-
 ```{r}
 # load sample sheet
 sample_sheet <- read_excel("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/TS/dna methyl/sample_sheet_ALL.xlsx",
@@ -38,13 +25,21 @@ sample_sheet <- sample_sheet[,1:10] %>%
   dplyr::filter(Phase==cell_phase) %>% 
   dplyr::filter(Karyotype!="46XisoXq") %>% 
   dplyr::filter(Phase!="NA")
-rownames(sample_sheet) <- paste(sample_sheet$Sentrix_ID, sample_sheet$Sentrix_Position, sep = "_")
+sample_sheet$Basename <- paste(sample_sheet$Sentrix_ID, sample_sheet$Sentrix_Position, sep = "_")
+rownames(sample_sheet) <- sample_sheet$Basename
+```
+
+```{r}
+# load the idat files
+path_to_idat <- "/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/TS/dna methyl/SPMTS2_Array data/"
+
+rgSet <- read.metharray.exp(path_to_idat, targets = sample_sheet)
 ```
 
 # Pre-processing
 
 ```{r}
-source("./process_methyl_microarray.R")
+source("process_methyl_microarray.R")
 gmSet <- process_methyl_microarray(rgSet)
 ```
 
@@ -88,32 +83,32 @@ disease <- factor(sample_sheet$Karyotype, levels = c("46XX", "45X"))
 
 pdf(glue("MDS_plot_{cell_phase}.pdf"))
 par(mfrow=c(1,1), cex =.5)
-plotMDS(Mval, labels=sample_sheet$Sample_Name, col=as.integer(disease))
-legend("top",legend=c("45X", "46XX"), col=as.integer(disease))
+plotMDS(Mval, labels=sample_sheet$Sample_Name, col=as.numeric(disease))
+legend("top",legend=c("46XX", "45X"), col =1:2)
 dev.off()
 ```
 
 # Differential Methylation Analysis
 
 ```{r}
-# match column names of Mval to row names of sample sheet
-sample_sheet <- as.data.frame(sample_sheet)
-rownames(sample_sheet) <- paste(sample_sheet$`Sentrix_ID`, sample_sheet$`Sentrix_Position`, sep = "_")
-
-# reorder sample sheet to match row names to column names of Mval
-sample_sheet <- sample_sheet[colnames(Mval),]
 
 # factor covariates
-
-patient <- factor(sample_sheet$Patient)
+if(cell_phase == "iPSC"){
+  patient <- factor(ifelse(sample_sheet$Patient=="TS050", "X50.53", "X14"))
+} else {
+  patient <- factor(ifelse(sample_sheet$Patient=="TS019", "X19", "X02.50"))
+}
 ```
 
 ```{r}
 design <- model.matrix(~disease+patient)
+design
+```
 
+```{r}
 fit <- lmFit(Mval, design)
 fit2 <- eBayes(fit)
-top <- topTable(fit2, number = "Inf", coef=2) # diff in karyotype, while controlling for patient
+top <- topTable(fit2, number = "Inf", coef="disease45X") # diff in karyotype, while controlling for patient
 top
 ```
 
@@ -138,7 +133,6 @@ results.ranges <- extractRanges(DMRs, genome="hg38")
 ```
 
 ```{r}
-library(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
 anno <- getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b5.hg38)
 
 gst.region.kegg <- goregion(results.ranges, all.cpg = rownames(top), collection = "KEGG", array.type="EPIC", anno=anno, sig.genes=T)
@@ -152,9 +146,6 @@ top.kegg <- top.kegg[top.kegg$FDR<0.05,]
 ```
 
 ```{r}
-# Load msigdbr and dplyr for data manipulation
-library(msigdbr)
-
 # Get the Hallmark gene sets for Homo sapiens (Human)
 m_df <- msigdbr(species = "Homo sapiens", category = "H")
 
@@ -175,7 +166,6 @@ gsa.region <- gsaregion(results.ranges, all.cpg = rownames(top), collection = ha
 
 ## Identify the direction of significant gene sets
 ```{r}
-library(tibble)
 sig.Genes.all <- unique(c(gst.region.go$SigGenesInSet,
                          gst.region.kegg$SigGenesInSet))
 sig.genes.endmt <- unique(gsa.region$SigGenesInSet)
@@ -196,7 +186,6 @@ anno <- rownames_to_column(anno, var = "ID")
 top <- merge(top, anno, by = "ID")
 
 # Split UCSC_RefGene_Name into individual genes
-library(tidyr)
 top <- top %>%
   mutate(UCSC_RefGene_Name = strsplit(as.character(UCSC_RefGene_Name), split = "[,;]")) %>%
   unnest(UCSC_RefGene_Name)
@@ -229,8 +218,6 @@ results <- sig.gene.list(sig.Genes.all)
 ## Pathway analysis of genes by methylation direction
 
 ```{r, echo = F}
-library(clusterProfiler)
-library(org.Hs.eg.db)
 source("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/Prakash Lab/TS Batch3 DNA Methylation Analysis/gene.list.R")
 # create gene list of hypermethylated genes
 hyper.gene.list <- gene.list("Hypermethylated")
@@ -296,8 +283,6 @@ kegg.enrich <- kegg.enrich[rownames(kegg.enrich) %in% rownames(top.kegg),]
 # Visualize gene lists
 ```{r}
 # pull cpgs associated with significant genes
-library(tibble)
-library(tidyr)
 anno.df <- as.data.frame(anno)
 anno.df <- rownames_to_column(anno.df, var = "ID")
 
@@ -311,14 +296,12 @@ annotate_probes <- function(gene){
   return(top1)
 }
 
-library(purrr)
 endmt.probes <- endmt.results %>%
   mutate(result = lapply(Gene, annotate_probes))
 ```
 
 ```{r}
 # get beta values for each gene
-library(GenomicRanges)
 
 sample_sheet <- sample_sheet %>% 
   mutate(Sentrix_Name = rownames(sample_sheet))
@@ -348,14 +331,13 @@ endmt.results$avg_Beta <- avg_Beta
 ```
 
 ```{r}
-library(ggplot2)
-library(glue)
 endmt.results <- endmt.results %>% 
   dplyr::filter(!is.na(MethylationStatus))
 results <- results %>% 
   dplyr::filter(!is.na(MethylationStatus))
 
 gene_plot <- function(res, descriptor){
+  res <- res[1:50,]
 gene_plot <- ggplot(res, aes(x = MethylationStatus, y = Gene)) +
   geom_point(aes(size = abs(avg_Beta), 
                  color = MethylationStatus), 
