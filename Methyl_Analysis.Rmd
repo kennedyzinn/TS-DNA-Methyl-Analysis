@@ -1,5 +1,5 @@
 ---
-title: "DNA methylation analysis of SMC phase"
+title: "DNA methylation analysis"
 author: "Kennedy Zinn"
 date: "2025-02-07"
 output: html_document
@@ -108,6 +108,12 @@ fit2 <- eBayes(fit)
 top <- topTable(fit2, number = "Inf",coef=8)
 top
 ```
+
+```{r}
+sig.cpg <- top[top$adj.P.Val<0.05,]
+nrow(sig.cpg)
+```
+
 
 ## KEGG Region Level Analysis
 
