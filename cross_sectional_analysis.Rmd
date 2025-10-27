@@ -23,17 +23,15 @@ sample_sheet <- read_excel("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houst
                          )
 sample_sheet <- sample_sheet[,1:10] %>% 
   dplyr::filter(Phase==cell_phase) %>% 
-  dplyr::filter(Karyotype!="46XisoXq") %>% 
-  dplyr::filter(Phase!="NA")
-sample_sheet$Basename <- paste(sample_sheet$Sentrix_ID, sample_sheet$Sentrix_Position, sep = "_")
-rownames(sample_sheet) <- sample_sheet$Basename
+  dplyr::filter(Karyotype!="46XisoXq")
+rownames(sample_sheet) <- paste(sample_sheet$Sentrix_ID, sample_sheet$Sentrix_Position, sep = "_")
 ```
 
 ```{r}
 # load the idat files
 path_to_idat <- "/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/TS/dna methyl/SPMTS2_Array data/"
 
-rgSet <- read.metharray.exp(path_to_idat, targets = sample_sheet)
+rgSet <- read.metharray.exp(path_to_idat)
 ```
 
 # Pre-processing
@@ -79,11 +77,9 @@ dim(Mval)
 
 ```{r}
 # PCA of M values
-disease <- factor(sample_sheet$Karyotype, levels = c("46XX", "45X"))
-
 pdf(glue("MDS_plot_{cell_phase}.pdf"))
 par(mfrow=c(1,1), cex =.5)
-plotMDS(Mval, labels=sample_sheet$Sample_Name, col=as.numeric(disease))
+plotMDS(Mval, labels=sample_sheet$Sample_Name, col=as.numeric(factor(sample_sheet$Karyotype, levels = c("46XX", "45X"))))
 legend("top",legend=c("46XX", "45X"), col =1:2)
 dev.off()
 ```
@@ -91,16 +87,19 @@ dev.off()
 # Differential Methylation Analysis
 
 ```{r}
+# match column names of Mval to row names of sample sheet
+sample_sheet <- as.data.frame(sample_sheet)
+rownames(sample_sheet) <- paste(sample_sheet$`Sentrix_ID`, sample_sheet$`Sentrix_Position`, sep = "_")
 
-# factor covariates
-if(cell_phase == "iPSC"){
-  patient <- factor(ifelse(sample_sheet$Patient=="TS050", "X50.53", "X14"))
-} else {
-  patient <- factor(ifelse(sample_sheet$Patient=="TS019", "X19", "X02.50"))
-}
+# reorder sample sheet to match row names to column names of Mval
+sample_sheet <- sample_sheet[colnames(Mval),]
 ```
 
 ```{r}
+#factor covariates
+patient <- factor(sample_sheet$Patient)
+disease <- factor(sample_sheet$Karyotype, levels = c("46XX", "45X"))
+
 design <- model.matrix(~disease+patient)
 design
 ```
@@ -123,7 +122,7 @@ hypo.proportion <- t[2]/nrow(sig.cpg)
 glue("{nrow(sig.cpg)} probes are significantly differentially methylated in 45XO cells compared to 46XX cells. The proportion of hypermethylated CpG sites is {hyper.proportion}. The proportion of hypomethylated CpG sites is {hypo.proportion}.")
 ```
 
-## Kegg Region Analysis
+## Region Analysis
 ```{r}
 myAnnotation <- cpg.annotate(datatype = "array", object = Mval, what = "M",
                              arraytype = "EPICv1",
@@ -162,9 +161,7 @@ hallmark_gs_list <- list("HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION" = emt_gene
 gsa.region <- gsaregion(results.ranges, all.cpg = rownames(top), collection = hallmark_gs_list, array.type="EPIC", anno=anno, sig.genes=T)
 ```
 
-# Pathway Analysis by Methylation Direction
-
-## Identify the direction of significant gene sets
+## Identify the direction of significant genes
 ```{r}
 sig.Genes.all <- unique(c(gst.region.go$SigGenesInSet,
                          gst.region.kegg$SigGenesInSet))
@@ -193,18 +190,40 @@ top <- top %>%
 # Filter for significant gene sets
 filteredResults <- top[top$UCSC_RefGene_Name %in% all_genes, ]
 
-# Summarize methylation status for each significant gene
+# get beta values for each group
+sample_45 <- sample_sheet %>% 
+  dplyr::filter(Karyotype=="45X")
+sample_46 <- sample_sheet %>% 
+  dplyr::filter(Karyotype=="46XX")
+
+beta_45 <- beta_values[, colnames(beta_values) %in% rownames(sample_45)]
+beta_46 <- beta_values[, colnames(beta_values) %in% rownames(sample_46)]
+
+# Summarize methylation status and beta value for each significant gene
 methylationSummary <- sapply(all_genes, function(gene) {
  probes <- filteredResults[filteredResults$UCSC_RefGene_Name == gene, ]
+ 
  avgLogFC <- mean(probes$logFC)
- return(avgLogFC)
+ 
+ beta_45_g <- beta_45[rownames(beta_45) %in% probes$ID,]
+ row_mean_beta_45 <- rowMeans(beta_45_g)
+ avgBeta_45 <- mean(row_mean_beta_45)
+ 
+ beta_46_g <- beta_46[rownames(beta_46) %in% probes$ID,]
+ row_mean_beta_46 <- rowMeans(beta_46_g)
+ avgBeta_46 <- mean(row_mean_beta_46)
+ 
+ avgBeta_diff <- avgBeta_45 - avgBeta_46
+ return(c(avgBeta_diff = avgBeta_diff, avg_M_diff=avgLogFC))
 })
 
+methylationSummary <- t(methylationSummary)
+
 # Determine methylation status
-methylationStatus <- ifelse(methylationSummary > 0, "Hypermethylated", "Hypomethylated")
+methylationStatus <- ifelse(methylationSummary[,"avgBeta_diff"] > 0, "Hypermethylated", "Hypomethylated")
 
 # Combine results into a data frame
-results <- data.frame(Gene = all_genes, MethylationStatus = methylationStatus, MethylationSummary=methylationSummary)
+results <- data.frame(Gene = all_genes, MethylationStatus = methylationStatus, avg_M_diff=methylationSummary[, "avg_M_diff"], avg_Beta_diff = methylationSummary[, "avgBeta_diff"])
 
 return(results)
 }
@@ -215,120 +234,7 @@ endmt.results <- sig.gene.list(sig.genes.endmt)
 results <- sig.gene.list(sig.Genes.all)
 ```
 
-## Pathway analysis of genes by methylation direction
-
-```{r, echo = F}
-source("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/Prakash Lab/TS Batch3 DNA Methylation Analysis/gene.list.R")
-# create gene list of hypermethylated genes
-hyper.gene.list <- gene.list("Hypermethylated")
-
-# create gene list of hypomethylated genes
-hypo.gene.list <- gene.list("Hypomethylated")
-```
-
-### GO
-
-```{r}
-if(nrow(top.go)>0){
-# hypermethylated gene sets
-go.hyper.enrich <- enrichGO(gene = hyper.gene.list, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "ALL")
-
-# hypomethylated gene sets
-go.hypo.enrich <- enrichGO(gene = hypo.gene.list, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "ALL")
-
-# add column specifying methylation direction
-go.hyper.enrich <- as.data.frame(go.hyper.enrich)
-if (nrow(go.hyper.enrich)>0) {
-  go.hyper.enrich$MethylationStatus = "Hypermethylated"
-}
-
-go.hypo.enrich <- as.data.frame(go.hypo.enrich)
-if (nrow(go.hypo.enrich)>0) {
-  go.hypo.enrich$MethylationStatus = "Hypomethylated"
-}
-
-# merge data sets
-go.enrich <- rbind(go.hyper.enrich, go.hypo.enrich)
-go.enrich <- go.enrich[rownames(go.enrich) %in% rownames(top.go),]
-}
-```
-
-### KEGG
-
-```{r}
-if(nrow(top.kegg)>0){
-# hypermethylated gene sets
-kegg.hyper.enrich <- enrichKEGG(gene = hyper.gene.list, organism = "hsa")
-
-# hypomethylated gene sets
-kegg.hypo.enrich <- enrichKEGG(gene = hypo.gene.list, organism = "hsa")
-
-# add column specifying methylation direction
-kegg.hyper.enrich <- as.data.frame(kegg.hyper.enrich)
-if (nrow(kegg.hyper.enrich)>0) {
-  kegg.hyper.enrich$MethylationStatus = "Hypermethylated"
-}
-
-kegg.hypo.enrich <- as.data.frame(kegg.hypo.enrich)
-if (nrow(kegg.hypo.enrich)>0) {
-  kegg.hypo.enrich$MethylationStatus = "Hypomethylated"
-} 
-
-# merge data sets
-kegg.enrich <- rbind(kegg.hyper.enrich, kegg.hypo.enrich)
-kegg.enrich <- kegg.enrich[rownames(kegg.enrich) %in% rownames(top.kegg),]
-}
-```
-
 # Visualize gene lists
-```{r}
-# pull cpgs associated with significant genes
-anno.df <- as.data.frame(anno)
-anno.df <- rownames_to_column(anno.df, var = "ID")
-
-annotate_probes <- function(gene){
-  top <- topTable(fit2, number = "Inf", coef = 2) %>% 
-    rownames_to_column(var = "ID")
-  top <- merge(top, anno.df, by = "ID") %>% # split gene list into individual genes
-    dplyr::mutate(UCSC_RefGene_Name = strsplit(as.character(UCSC_RefGene_Name), split = "[,;]")) %>%
-    unnest(UCSC_RefGene_Name)
-  top1 <- top[top$UCSC_RefGene_Name==gene,]
-  return(top1)
-}
-
-endmt.probes <- endmt.results %>%
-  mutate(result = lapply(Gene, annotate_probes))
-```
-
-```{r}
-# get beta values for each gene
-
-sample_sheet <- sample_sheet %>% 
-  mutate(Sentrix_Name = rownames(sample_sheet))
-
-avg_Beta <- numeric(0)
-
-for (gene in endmt.probes$Gene){
-  
-  cpgs_on_gene <- endmt.probes[endmt.probes$Gene==gene,]$result[[1]]$ID
-
-  gene_beta <- beta_values[cpgs_on_gene,]
-
-  # Convert matrix to long format
-  gene_long <- as.data.frame(gene_beta) %>%
-    rownames_to_column("probe_id") %>%
-    pivot_longer(-probe_id, names_to = "Sentrix_Name", values_to = "beta") %>%
-    left_join(sample_sheet, by = "Sentrix_Name") # merge subject info with beta values
-
-  # Compute average methylation level of gene for each subject and average for each group
-  group_means <- aggregate(beta ~ Karyotype, data = gene_long, FUN = mean)
-  mean_diff <- group_means$beta[1] - group_means$beta[2]
-  
-  avg_Beta <- c(avg_Beta, mean_diff)
-}
-
-endmt.results$avg_Beta <- avg_Beta
-```
 
 ```{r}
 endmt.results <- endmt.results %>% 
@@ -337,9 +243,8 @@ results <- results %>%
   dplyr::filter(!is.na(MethylationStatus))
 
 gene_plot <- function(res, descriptor){
-  res <- res[1:50,]
 gene_plot <- ggplot(res, aes(x = MethylationStatus, y = Gene)) +
-  geom_point(aes(size = abs(avg_Beta), 
+  geom_point(aes(size = abs(avg_Beta_diff), 
                  color = MethylationStatus), 
              alpha = 0.7) +
   scale_size_continuous(name = "Methylation\nLevel", guide = "none") +
@@ -357,20 +262,18 @@ ggsave(glue("gene_plot_{cell_phase}_{descriptor}.pdf"), gene_plot, width = 8, he
 
 gene_plot(endmt.results, "ENDMT")
 gene_plot(results, "ALL")
+
+#get top 50 genes
+results <- results %>% 
+  dplyr::arrange(desc(avg_Beta_diff))
+
+res_50 <- results[1:50,]
+gene_plot(res_50, "top50")
 ```
 
 # Export Results
 
 ```{r}
-if(exists("kegg.enrich")==TRUE){
-  write.csv(kegg.enrich, glue("kegg_{cell_phase}_enrichment_results.csv"))
-}
-
-if(exists("go.enrich")==TRUE){
-  write.csv(go.enrich, glue("go_{cell_phase}_enrichment_results.csv"))
-  top.go <- topGSA(gst.region.go, number = "Inf")
-}
-
 write.csv(top.kegg, glue("{cell_phase}_kegg_region.csv"))
 write.csv(top.go, glue("{cell_phase}_go_region.csv"))
 
