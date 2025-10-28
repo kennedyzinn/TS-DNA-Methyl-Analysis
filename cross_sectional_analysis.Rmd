@@ -7,11 +7,11 @@ output: html_document
 
 ```{r}
 packages <- c("minfi", "limma", "DMRcate", "maxprobes", "readxl", "dplyr", "missMethyl", "MethylToSNP", "glue", "IlluminaHumanMethylationEPICanno.ilm10b5.hg38", "msigdbr", "tibble", "tidyr", "clusterProfiler", "org.Hs.eg.db", "purrr", "GenomicRanges", "ggplot2")
-sapply(packages, library, character.only = TRUE)
+invisible(sapply(packages, library, character.only = TRUE))
 ```
 
 ```{r}
-cell_phase = "iPSC" # either iPSC or EC
+cell_phase = "interaction" #  iPSC, EC or interaction
 ```
 
 # Load data
@@ -21,24 +21,22 @@ sample_sheet <- read_excel("/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houst
                          skip = 9,
                          na="NA"
                          )
-sample_sheet <- sample_sheet[,1:10] %>% 
-  dplyr::filter(Phase==cell_phase) %>% 
-  dplyr::filter(Karyotype!="46XisoXq")
+if(cell_phase!="interaction"){
+  sample_sheet <- sample_sheet[,1:10] %>% 
+    dplyr::filter(Phase==cell_phase) %>% 
+    dplyr::filter(Karyotype!="46XisoXq")
+} else {
+  sample_sheet <- sample_sheet[,1:10] %>% 
+    dplyr::filter(Phase!="NCC") %>% 
+    dplyr::filter(Phase!="NA") %>% 
+    dplyr::filter(Karyotype!="46XisoXq")
+}
+
 rownames(sample_sheet) <- paste(sample_sheet$Sentrix_ID, sample_sheet$Sentrix_Position, sep = "_")
 ```
 
 ```{r}
-# load the idat files
-path_to_idat <- "/Users/kennedyzinn/Desktop/OneDrive - UTHealth Houston/GRA/TS/dna methyl/SPMTS2_Array data/"
-
-rgSet <- read.metharray.exp(path_to_idat)
-```
-
-# Pre-processing
-
-```{r}
-source("process_methyl_microarray.R")
-gmSet <- process_methyl_microarray(rgSet)
+gmSet <- readRDS("gmSet.rds")
 ```
 
 Beta values, which range between [0,1], represent the proportion of methylated DNA copies at a specific CpG site compared to all of the DNA copies at that site. Beta values for the ith CpG site are mathematically defined as,
@@ -79,8 +77,13 @@ dim(Mval)
 # PCA of M values
 pdf(glue("MDS_plot_{cell_phase}.pdf"))
 par(mfrow=c(1,1), cex =.5)
-plotMDS(Mval, labels=sample_sheet$Sample_Name, col=as.numeric(factor(sample_sheet$Karyotype, levels = c("46XX", "45X"))))
-legend("top",legend=c("46XX", "45X"), col =1:2)
+if(cell_phase!="interaction"){
+  plotMDS(Mval, labels=sample_sheet$Sample_Name, col=as.integer(factor(sample_sheet$Karyotype, levels = c("46XX", "45X"))))
+  legend("top",legend=c("46XX", "45X"), col =as.integer(factor(sample_sheet$Karyotype, levels = c("46XX", "45X"))))
+} else {
+  plotMDS(Mval, labels=sample_sheet$Karyotype, col=as.integer(factor(sample_sheet$Phase)))
+  legend("top",legend=c("iPSC", "EC"), col=as.integer(factor(sample_sheet$Phase)))
+}
 dev.off()
 ```
 
@@ -100,14 +103,25 @@ sample_sheet <- sample_sheet[colnames(Mval),]
 patient <- factor(sample_sheet$Patient)
 disease <- factor(sample_sheet$Karyotype, levels = c("46XX", "45X"))
 
-design <- model.matrix(~disease+patient)
+if(cell_phase!="interaction"){
+  design <- model.matrix(~disease+patient)
+} else{
+  phase <- factor(sample_sheet$Phase, labels=c("iPSC", "EC"))
+  design <- model.matrix(~patient+phase*disease, data = sample_sheet)
+}
+
 design
 ```
 
 ```{r}
 fit <- lmFit(Mval, design)
 fit2 <- eBayes(fit)
-top <- topTable(fit2, number = "Inf", coef="disease45X") # diff in karyotype, while controlling for patient
+if(cell_phase!="interaction"){
+  coef = "disease45X"
+} else {
+  coef="PhaseEC.disease45X"
+}
+top <- topTable(fit2, number = "Inf", coef=coef) 
 top
 ```
 
@@ -126,7 +140,7 @@ glue("{nrow(sig.cpg)} probes are significantly differentially methylated in 45XO
 ```{r}
 myAnnotation <- cpg.annotate(datatype = "array", object = Mval, what = "M",
                              arraytype = "EPICv1",
-                             analysis.type = "differential", design = design, contrasts = F, coef = 2)
+                             analysis.type = "differential", design = design, contrasts = F, coef = coef)
 DMRs <- suppressMessages(dmrcate(myAnnotation))
 results.ranges <- extractRanges(DMRs, genome="hg38")
 ```
@@ -190,30 +204,29 @@ top <- top %>%
 # Filter for significant gene sets
 filteredResults <- top[top$UCSC_RefGene_Name %in% all_genes, ]
 
-# get beta values for each group
-sample_45 <- sample_sheet %>% 
-  dplyr::filter(Karyotype=="45X")
-sample_46 <- sample_sheet %>% 
-  dplyr::filter(Karyotype=="46XX")
-
-beta_45 <- beta_values[, colnames(beta_values) %in% rownames(sample_45)]
-beta_46 <- beta_values[, colnames(beta_values) %in% rownames(sample_46)]
-
 # Summarize methylation status and beta value for each significant gene
 methylationSummary <- sapply(all_genes, function(gene) {
  probes <- filteredResults[filteredResults$UCSC_RefGene_Name == gene, ]
  
  avgLogFC <- mean(probes$logFC)
  
- beta_45_g <- beta_45[rownames(beta_45) %in% probes$ID,]
- row_mean_beta_45 <- rowMeans(beta_45_g)
- avgBeta_45 <- mean(row_mean_beta_45)
+ beta <- beta_values[rownames(beta_meta_data) %in% rownames(probes),]
+ t_sample_sheet <- t(sample_sheet)
+ beta_sample_avg <- colMeans(beta)
  
- beta_46_g <- beta_46[rownames(beta_46) %in% probes$ID,]
- row_mean_beta_46 <- rowMeans(beta_46_g)
- avgBeta_46 <- mean(row_mean_beta_46)
+ beta_meta_data <- rbind(beta_sample_avg, t_sample_sheet)
+ t_beta_meta_data <- t(beta_meta_data)
+ t_beta_meta_data <- as.data.frame(t_beta_meta_data)
+ t_beta_meta_data$beta_sample_avg <- as.numeric(t_beta_meta_data[,1])
  
- avgBeta_diff <- avgBeta_45 - avgBeta_46
+ if(cell_phase!="interaction"){
+   group_means <- aggregate(beta_sample_avg ~ Karyotype, data = t_beta_meta_data, FUN = mean)
+   avgBeta_diff <- group_means[1,2] - group_means[2,2]
+ } else {
+   group_means <- aggregate(beta_sample_avg ~ Karyotype:Phase, data = t_beta_meta_data, FUN = mean)
+   avgBeta_diff <- group_means[1,2] - group_means[2,2]
+ }
+ 
  return(c(avgBeta_diff = avgBeta_diff, avg_M_diff=avgLogFC))
 })
 
@@ -269,6 +282,72 @@ results <- results %>%
 
 res_50 <- results[1:50,]
 gene_plot(res_50, "top50")
+```
+
+# plot cell trajectory (for interaction analysis)
+
+```{r}
+if(cell_phase=="interaction"){
+  # for checking TIMP3 trajectory
+  TIMP3.probes <- results[results$Gene=="TIMP3",] %>% 
+    mutate(result = lapply(Gene, annotate_probes))
+```
+
+
+# Visualize profiles for genes of interest
+```{r}
+# plot beta value per ID gene x group x phase
+sample_sheet <- sample_sheet %>% 
+  mutate(Sentrix_Name = rownames(sample_sheet))
+
+plot_list <- list()
+
+probe = TIMP3.probes #TIMP3.probes or endmt.probes
+
+for (gene in probe){
+  
+  cpgs_on_gene <- probe[probe$Gene==gene,]$result[[1]]$ID
+
+  gene_beta <- beta_values[cpgs_on_gene,]
+
+  # Convert matrix to long format
+  gene_long <- as.data.frame(gene_beta) %>%
+    rownames_to_column("probe_id") %>%
+    pivot_longer(-probe_id, names_to = "Sentrix_Name", values_to = "beta") %>%
+    left_join(sample_sheet, by = "Sentrix_Name") # merge subject info with beta values
+
+  # Compute average methylation level of gene for each subject and average for each group
+  gene_avg <- gene_long %>%
+  group_by(Patient, Karyotype, Phase) %>%
+  summarise(mean_beta = mean(beta, na.rm = TRUE), .groups = "drop")
+
+  group_avg <- gene_avg %>%
+    group_by(Karyotype, Phase) %>%
+    summarise(mean_beta = mean(mean_beta, na.rm = TRUE), .groups = "drop")
+  group_avg$Phase <- factor(group_avg$Phase, levels = c("iPSC", "EC"))
+
+  # plot
+  profile <- ggplot() +
+    # Group mean dashed lines
+    geom_line(data = group_avg, aes(x = Phase, y = mean_beta, group = Karyotype, color = Karyotype), linetype = "solid", linewidth = 1) +
+    scale_color_manual(values = c("46XX" = "lightblue", "45X" = "red")) +
+    labs(title = glue("Methylation Profile of {gene}"), x = "Phase", y = "Beta value") +
+    theme_minimal(base_size = 14, base_family = "serif")
+  plot_list[[gene]] <- profile
+  print(profile)
+}
+```
+
+```{r}
+library(gridExtra)
+library(grid)
+# Combine all plots on one page
+combined_plot <- marrangeGrob(grobs = plot_list[1:10],
+                             ncol = 2, nrow = 3, top = NULL)
+
+# Save combined plot
+ggsave("gene_profiles_endmt.pdf", combined_plot, width = 9, height = 6)
+}
 ```
 
 # Export Results
